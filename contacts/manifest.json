@@ -1,0 +1,9 @@
+{
+  "name": "contacts",
+  "caption": "Contacts",
+  "order": 10,
+  "requirements": {
+    "pip": {},
+    "node": {}
+  }
+}
