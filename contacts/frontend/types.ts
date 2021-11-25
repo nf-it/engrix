@@ -15,11 +15,12 @@ export type TeamContactModel = {
   nickname: string
   birthdate: string | null
   emails: ContactReqs
-  phones: ContactReq
+  phones: ContactReqs
   im: ContactReqs
   company: string
   position: string
   homeAddress: string
   workAddress: string
   notes: string
+  pinned: boolean
 }

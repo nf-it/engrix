@@ -1,7 +1,7 @@
 from typing import *
 import datetime
 import re
-from wefram import ds, settings
+from wefram import ds, settings, aaa
 from wefram.urls import media_res_url
 from wefram.l10n import lazy_gettext
 from wefram.tools import py_to_json
@@ -10,7 +10,8 @@ from wefram.models import User, SettingsCatalog
 
 __all__ = [
     'Directory',
-    'Contact'
+    'Contact',
+    'Pin'
 ]
 
 
@@ -66,6 +67,7 @@ class Contact(ds.Model):
             home_address: Optional[str] = None,
             work_address: Optional[str] = None,
             notes: Optional[str] = None,
+            pinned: bool = False,
             for_json: bool = False
     ) -> dict:
         result: dict = {
@@ -82,13 +84,25 @@ class Contact(ds.Model):
             'position': position or '',
             'home_address': home_address or '',
             'work_address': work_address or '',
-            'notes': str(notes).strip() if notes else ''
+            'notes': str(notes).strip() if notes else '',
+            'pinned': pinned
         }
         return result if not for_json else py_to_json(result)
 
     # -
     # - Some useful providers for contacts, inc. special cases
     # -
+
+    @classmethod
+    async def ensure_for_user(cls, user_id: str) -> 'Contact':
+        existing: Optional[Contact] = await cls.first(user_id=user_id)
+        if existing is not None:
+            return existing
+        contact: Contact = await cls.create(
+            user_id=user_id
+        )
+        await ds.db.flush()
+        return contact
 
     @classmethod
     async def team(
@@ -139,6 +153,11 @@ class Contact(ds.Model):
                 return None
             return _value.url if for_json else _value
 
+        logged_user_id: Optional[str] = aaa.get_current_user_id()
+
+        if not logged_user_id:  # Return nothing for the not logged in user
+            return []
+
         team_settings: SettingsCatalog = await settings.get('team')
         sort_by_last_name: bool = team_settings['sort_by_last_name']
         list_middle_name: bool = team_settings['list_middle_name']
@@ -184,10 +203,11 @@ class Contact(ds.Model):
                 )
             where.append(ds.or_(*search_where))
 
-        query = ds.select(Contact, User) \
+        query = ds.select(Contact, User, Pin) \
             .join(User, User.id == Contact.user_id, full=True) \
+            .join(Pin, ds.and_(Pin.user_id == logged_user_id, Pin.contact_id == Contact.id), isouter=True) \
             .where(ds.and_(*where) if len(where) > 1 else where[0]) \
-            .order_by(order)
+            .order_by(Pin.contact_id.is_(None), order)
 
         items = await ds.execute(query)
         results: List[dict] = []
@@ -196,8 +216,9 @@ class Contact(ds.Model):
         # dicts.
         contact: Optional[Contact]
         user: Optional[User]
+        pin: Optional[Pin]
         for item in items:
-            contact, user = item
+            contact, user, pin = item
             results.append(cls.generate_dict(
                 contact_id=contact.id if contact is not None else None,
                 user_id=user.id if user is not None else None,
@@ -213,8 +234,55 @@ class Contact(ds.Model):
                 home_address=contact.home_address if contact is not None else '',
                 work_address=contact.work_address if contact is not None else '',
                 notes=contact.notes if contact is not None else '',
+                pinned=pin is not None,
                 for_json=for_json
             ))
 
         return results
+
+
+class Pin(ds.Model):
+    user_id = ds.Column(
+        ds.UUID(),
+        ds.ForeignKey(ds.ModelColumn('system.User', 'id'), ondelete='CASCADE'),
+        nullable=False,
+        primary_key=True
+    )
+    contact_id = ds.Column(
+        ds.UUID(),
+        ds.ForeignKey(Contact.id, ondelete='CASCADE'),
+        nullable=False,
+        primary_key=True
+    )
+
+    @classmethod
+    async def pin(cls, contact_id: str) -> None:
+        logged_user_id: Optional[str] = aaa.get_current_user_id()
+        if logged_user_id is None:
+            return
+        pin: Optional[Pin] = await cls.first(
+            user_id=logged_user_id,
+            contact_id=contact_id
+        )
+        if pin is not None:
+            return
+        await Pin.create(
+            user_id=logged_user_id,
+            contact_id=contact_id
+        )
+        await ds.db.flush()
+
+    @classmethod
+    async def unpin(cls, contact_id: str) -> None:
+        logged_user_id: Optional[str] = aaa.get_current_user_id()
+        if logged_user_id is None:
+            return
+        pin: Optional[Pin] = await cls.first(
+            user_id=logged_user_id,
+            contact_id=contact_id
+        )
+        if pin is None:
+            return
+        await pin.delete()
+        await ds.db.flush()
 
